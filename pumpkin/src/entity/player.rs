@@ -9,8 +9,10 @@ use std::{
 
 use crossbeam::atomic::AtomicCell;
 use pumpkin_config::{ADVANCED_CONFIG, BASIC_CONFIG};
-use pumpkin_data::sound::Sound;
-use pumpkin_entity::{entity_type::EntityType, EntityId};
+use pumpkin_data::{
+    entity::EntityType,
+    sound::{Sound, SoundCategory},
+};
 use pumpkin_inventory::player::PlayerInventory;
 use pumpkin_protocol::server::play::{
     SCloseContainer, SCookieResponse as SPCookieResponse, SPlayPingRequest, SPlayerLoaded,
@@ -29,7 +31,7 @@ use pumpkin_protocol::{
         SPlayerRotation, SSetCreativeSlot, SSetHeldItem, SSetPlayerGround, SSwingArm, SUseItem,
         SUseItemOn,
     },
-    RawPacket, ServerPacket, SoundCategory,
+    RawPacket, ServerPacket,
 };
 use pumpkin_protocol::{client::play::CUpdateTime, codec::var_int::VarInt};
 use pumpkin_protocol::{
@@ -56,7 +58,7 @@ use pumpkin_world::{
 };
 use tokio::sync::{Mutex, Notify, RwLock};
 
-use super::Entity;
+use super::{Entity, EntityId};
 use crate::{
     command::{client_cmd_suggestions, dispatcher::CommandDispatcher},
     data::op_data::OPERATOR_CONFIG,
@@ -317,7 +319,7 @@ impl Player {
         {
             world
                 .play_sound(
-                    Sound::EntityPlayerAttackNodamage as u16,
+                    Sound::EntityPlayerAttackNodamage,
                     SoundCategory::Players,
                     &pos,
                 )
@@ -326,7 +328,7 @@ impl Player {
         }
 
         world
-            .play_sound(Sound::EntityPlayerHurt as u16, SoundCategory::Players, &pos)
+            .play_sound(Sound::EntityPlayerHurt, SoundCategory::Players, &pos)
             .await;
 
         let attack_type = AttackType::new(self, attack_cooldown_progress as f32).await;

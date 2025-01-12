@@ -5,20 +5,21 @@ pub mod player_chunker;
 
 use crate::{
     command::client_cmd_suggestions,
-    entity::{living::LivingEntity, mob::MobEntity, player::Player, Entity},
+    entity::{living::LivingEntity, mob::MobEntity, player::Player, Entity, EntityId},
     error::PumpkinError,
     server::Server,
 };
 use level_time::LevelTime;
 use pumpkin_config::BasicConfiguration;
-use pumpkin_entity::{entity_type::EntityType, pose::EntityPose, EntityId};
+use pumpkin_data::{
+    entity::{EntityPose, EntityType},
+    sound::{Sound, SoundCategory},
+    world::WorldEvent,
+};
+use pumpkin_protocol::client::play::{CBlockUpdate, CRespawn, CSoundEffect, CWorldEvent};
 use pumpkin_protocol::{
     client::play::CLevelEvent,
     codec::{identifier::Identifier, var_int::VarInt},
-};
-use pumpkin_protocol::{
-    client::play::{CBlockUpdate, CRespawn, CSoundEffect, CWorldEvent},
-    SoundCategory,
 };
 use pumpkin_protocol::{
     client::play::{
@@ -155,7 +156,11 @@ impl World {
         }
     }
 
-    pub async fn play_sound(
+    pub async fn play_sound(&self, sound: Sound, category: SoundCategory, position: &Vector3<f64>) {
+        self.play_sound_raw(sound as u16, category, position).await;
+    }
+
+    pub async fn play_sound_raw(
         &self,
         sound_id: u16,
         category: SoundCategory,
@@ -176,13 +181,13 @@ impl World {
         .await;
     }
 
-    pub async fn play_block_sound(&self, sound_id: u16, position: WorldPosition) {
+    pub async fn play_block_sound(&self, sound: Sound, position: WorldPosition) {
         let new_vec = Vector3::new(
             f64::from(position.0.x) + 0.5,
             f64::from(position.0.y) + 0.5,
             f64::from(position.0.z) + 0.5,
         );
-        self.play_sound(sound_id, SoundCategory::Blocks, &new_vec)
+        self.play_sound(sound, SoundCategory::Blocks, &new_vec)
             .await;
     }
 
@@ -881,8 +886,12 @@ impl World {
     pub async fn break_block(&self, position: WorldPosition, cause: Option<&Player>) {
         let broken_block_state_id = self.set_block_state(position, 0).await;
 
-        let particles_packet =
-            CWorldEvent::new(2001, &position, broken_block_state_id.into(), false);
+        let particles_packet = CWorldEvent::new(
+            WorldEvent::BlockBroken as i32,
+            &position,
+            broken_block_state_id.into(),
+            false,
+        );
 
         match cause {
             Some(player) => {
