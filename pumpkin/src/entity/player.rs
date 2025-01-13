@@ -14,9 +14,6 @@ use pumpkin_data::{
     sound::{Sound, SoundCategory},
 };
 use pumpkin_inventory::player::PlayerInventory;
-use pumpkin_protocol::server::play::{
-    SCloseContainer, SCookieResponse as SPCookieResponse, SPlayPingRequest, SPlayerLoaded,
-};
 use pumpkin_protocol::{
     bytebuf::packet_id::Packet,
     client::play::{
@@ -33,6 +30,12 @@ use pumpkin_protocol::{
     },
     RawPacket, ServerPacket,
 };
+use pumpkin_protocol::{
+    client::play::CSoundEffect,
+    server::play::{
+        SCloseContainer, SCookieResponse as SPCookieResponse, SPlayPingRequest, SPlayerLoaded,
+    },
+};
 use pumpkin_protocol::{client::play::CUpdateTime, codec::var_int::VarInt};
 use pumpkin_protocol::{
     client::play::{CSetEntityMetadata, Metadata},
@@ -41,7 +44,7 @@ use pumpkin_protocol::{
 use pumpkin_util::{
     math::{
         boundingbox::{BoundingBox, BoundingBoxSize},
-        position::WorldPosition,
+        position::BlockPos,
         vector2::Vector2,
         vector3::Vector3,
     },
@@ -368,6 +371,30 @@ impl Player {
         if config.swing {}
     }
 
+    pub async fn play_sound(
+        &self,
+        sound_id: u16,
+        category: SoundCategory,
+        position: &Vector3<f64>,
+        volume: f32,
+        pitch: f32,
+        seed: f64,
+    ) {
+        self.client
+            .send_packet(&CSoundEffect::new(
+                VarInt(i32::from(sound_id)),
+                None,
+                category,
+                position.x,
+                position.y,
+                position.z,
+                volume,
+                pitch,
+                seed,
+            ))
+            .await;
+    }
+
     pub async fn await_cancel(&self) {
         self.cancel_tasks.notified().await;
     }
@@ -533,7 +560,7 @@ impl Player {
         }
     }
 
-    pub fn can_interact_with_block_at(&self, pos: &WorldPosition, additional_range: f64) -> bool {
+    pub fn can_interact_with_block_at(&self, pos: &BlockPos, additional_range: f64) -> bool {
         let d = self.block_interaction_range() + additional_range;
         let box_pos = BoundingBox::from_block(pos);
         let entity_pos = self.living_entity.entity.pos.load();

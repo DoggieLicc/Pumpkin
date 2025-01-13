@@ -16,7 +16,7 @@ use pumpkin_data::{
     sound::{Sound, SoundCategory},
     world::WorldEvent,
 };
-use pumpkin_protocol::client::play::{CBlockUpdate, CRespawn, CSoundEffect, CWorldEvent};
+use pumpkin_protocol::client::play::{CBlockUpdate, CRespawn, CWorldEvent};
 use pumpkin_protocol::{
     client::play::CLevelEvent,
     codec::{identifier::Identifier, var_int::VarInt},
@@ -30,7 +30,7 @@ use pumpkin_protocol::{
 };
 use pumpkin_registry::DimensionType;
 use pumpkin_util::math::vector2::Vector2;
-use pumpkin_util::math::{position::WorldPosition, vector3::Vector3};
+use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use pumpkin_util::text::{color::NamedColor, TextComponent};
 use pumpkin_world::chunk::ChunkData;
 use pumpkin_world::level::Level;
@@ -157,7 +157,8 @@ impl World {
     }
 
     pub async fn play_sound(&self, sound: Sound, category: SoundCategory, position: &Vector3<f64>) {
-        self.play_sound_raw(sound as u16, category, position).await;
+        self.play_sound_raw(sound as u16, category, position, 1.0, 1.0)
+            .await;
     }
 
     pub async fn play_sound_raw(
@@ -165,38 +166,38 @@ impl World {
         sound_id: u16,
         category: SoundCategory,
         position: &Vector3<f64>,
+        volume: f32,
+        pitch: f32,
     ) {
         let seed = thread_rng().gen::<f64>();
-        self.broadcast_packet_all(&CSoundEffect::new(
-            VarInt(i32::from(sound_id)),
-            None,
-            category,
-            position.x,
-            position.y,
-            position.z,
-            1.0,
-            1.0,
-            seed,
-        ))
-        .await;
+        let players = self.current_players.lock().await;
+        for (_, player) in players.iter() {
+            player
+                .play_sound(sound_id, category, position, volume, pitch, seed)
+                .await;
+        }
     }
 
-    pub async fn play_block_sound(&self, sound: Sound, position: WorldPosition) {
+    pub async fn play_block_sound(
+        &self,
+        sound: Sound,
+        category: SoundCategory,
+        position: BlockPos,
+    ) {
         let new_vec = Vector3::new(
             f64::from(position.0.x) + 0.5,
             f64::from(position.0.y) + 0.5,
             f64::from(position.0.z) + 0.5,
         );
-        self.play_sound(sound, SoundCategory::Blocks, &new_vec)
-            .await;
+        self.play_sound(sound, category, &new_vec).await;
     }
 
-    pub async fn play_record(&self, record_id: i32, position: WorldPosition) {
+    pub async fn play_record(&self, record_id: i32, position: BlockPos) {
         self.broadcast_packet_all(&CLevelEvent::new(1010, position, record_id, false))
             .await;
     }
 
-    pub async fn stop_record(&self, position: WorldPosition) {
+    pub async fn stop_record(&self, position: BlockPos) {
         self.broadcast_packet_all(&CLevelEvent::new(1011, position, 0, false))
             .await;
     }
@@ -223,8 +224,8 @@ impl World {
     /// Gets the y position of the first non air block from the top down
     pub async fn get_top_block(&self, position: Vector2<i32>) -> i32 {
         for y in (-64..=319).rev() {
-            let pos = WorldPosition(Vector3::new(position.x, y, position.z));
-            let block = self.get_block_state(pos).await;
+            let pos = BlockPos(Vector3::new(position.x, y, position.z));
+            let block = self.get_block_state(&pos).await;
             if let Ok(block) = block {
                 if block.air {
                     continue;
@@ -441,7 +442,7 @@ impl World {
     pub async fn respawn_player(&self, player: &Arc<Player>, alive: bool) {
         let last_pos = player.living_entity.last_pos.load();
         let death_dimension = player.world().dimension_type.name();
-        let death_location = WorldPosition(Vector3::new(
+        let death_location = BlockPos(Vector3::new(
             last_pos.x.round() as i32,
             last_pos.y.round() as i32,
             last_pos.z.round() as i32,
@@ -663,10 +664,7 @@ impl World {
     /// # Arguments
     ///
     /// * `position`: The position the function will check.
-    pub async fn get_players_by_pos(
-        &self,
-        position: WorldPosition,
-    ) -> HashMap<uuid::Uuid, Arc<Player>> {
+    pub async fn get_players_by_pos(&self, position: BlockPos) -> HashMap<uuid::Uuid, Arc<Player>> {
         self.current_players
             .lock()
             .await
@@ -828,7 +826,7 @@ impl World {
     }
 
     /// Sets a block
-    pub async fn set_block_state(&self, position: WorldPosition, block_state_id: u16) -> u16 {
+    pub async fn set_block_state(&self, position: &BlockPos, block_state_id: u16) -> u16 {
         let (chunk_coordinate, relative_coordinates) = position.chunk_and_chunk_relative_position();
 
         // Since we divide by 16 remnant can never exceed u8
@@ -843,7 +841,7 @@ impl World {
             .set_block(relative, block_state_id);
 
         self.broadcast_packet_all(&CBlockUpdate::new(
-            &position,
+            position,
             i32::from(block_state_id).into(),
         ))
         .await;
@@ -883,12 +881,12 @@ impl World {
         chunk
     }
 
-    pub async fn break_block(&self, position: WorldPosition, cause: Option<&Player>) {
+    pub async fn break_block(&self, position: &BlockPos, cause: Option<&Player>) {
         let broken_block_state_id = self.set_block_state(position, 0).await;
 
         let particles_packet = CWorldEvent::new(
             WorldEvent::BlockBroken as i32,
-            &position,
+            position,
             broken_block_state_id.into(),
             false,
         );
@@ -902,7 +900,7 @@ impl World {
         }
     }
 
-    pub async fn get_block_state_id(&self, position: WorldPosition) -> Result<u16, GetBlockError> {
+    pub async fn get_block_state_id(&self, position: &BlockPos) -> Result<u16, GetBlockError> {
         let (chunk, relative) = position.chunk_and_chunk_relative_position();
         let relative = ChunkRelativeBlockCoordinates::from(relative);
         let chunk = self.receive_chunk(chunk).await;
@@ -918,7 +916,7 @@ impl World {
     /// Gets the Block from the Block Registry, Returns None if the Block has not been found
     pub async fn get_block(
         &self,
-        position: WorldPosition,
+        position: &BlockPos,
     ) -> Result<&pumpkin_world::block::block_registry::Block, GetBlockError> {
         let id = self.get_block_state_id(position).await?;
         get_block_by_state_id(id).ok_or(GetBlockError::InvalidBlockId)
@@ -927,7 +925,7 @@ impl World {
     /// Gets the Block state from the Block Registry, Returns None if the Block state has not been found
     pub async fn get_block_state(
         &self,
-        position: WorldPosition,
+        position: &BlockPos,
     ) -> Result<&pumpkin_world::block::block_registry::State, GetBlockError> {
         let id = self.get_block_state_id(position).await?;
         get_state_by_state_id(id).ok_or(GetBlockError::InvalidBlockId)
@@ -936,7 +934,7 @@ impl World {
     /// Gets the Block + Block state from the Block Registry, Returns None if the Block state has not been found
     pub async fn get_block_and_block_state(
         &self,
-        position: WorldPosition,
+        position: &BlockPos,
     ) -> Result<
         (
             &pumpkin_world::block::block_registry::Block,
