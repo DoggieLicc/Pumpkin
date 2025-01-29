@@ -2,6 +2,7 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 
 use crate::block::block_manager::BlockActionResult;
+use crate::block::properties::Direction;
 use crate::entity::mob;
 use crate::net::PlayerConfig;
 use crate::{
@@ -41,14 +42,16 @@ use pumpkin_util::{
     text::TextComponent,
     GameMode,
 };
-use pumpkin_world::block::block_registry::{get_block_collision_shapes, Block};
+use pumpkin_world::block::block_registry::get_block_collision_shapes;
+use pumpkin_world::block::block_registry::Block;
 use pumpkin_world::item::item_registry::get_item_by_id;
 use pumpkin_world::item::ItemStack;
 use pumpkin_world::{
-    block::{block_registry::get_block_by_item, BlockFace},
+    block::{block_registry::get_block_by_item, BlockDirection},
     entity::entity_registry::get_entity_id,
     item::item_registry::get_spawn_egg,
 };
+
 use pumpkin_world::{WORLD_LOWEST_Y, WORLD_MAX_Y};
 use thiserror::Error;
 
@@ -897,7 +900,7 @@ impl Player {
             return Err(BlockPlacingError::BlockOutOfReach.into());
         }
 
-        let Ok(face) = BlockFace::try_from(use_item_on.face.0) else {
+        let Ok(face) = BlockDirection::try_from(use_item_on.face.0) else {
             return Err(BlockPlacingError::InvalidBlockFace.into());
         };
 
@@ -1101,7 +1104,7 @@ impl Player {
         item_t: String,
         server: &Server,
         location: BlockPos,
-        face: &BlockFace,
+        face: &BlockDirection,
     ) -> Result<bool, Box<dyn PumpkinError>> {
         // checks if spawn egg has a corresponding entity name
         if let Some(spawn_item_id) = get_entity_id(&item_t) {
@@ -1142,16 +1145,31 @@ impl Player {
         Ok(true)
     }
 
+    fn get_player_direction(&self) -> Direction {
+        let adjusted_yaw = (self.living_entity.entity.yaw.load() % 360.0 + 360.0) % 360.0; // Normalize yaw to [0, 360)
+
+        match adjusted_yaw {
+            0.0..=45.0 | 315.0..=360.0 => Direction::South,
+            45.0..=135.0 => Direction::West,
+            135.0..=225.0 => Direction::North,
+            225.0..=315.0 => Direction::East,
+            _ => Direction::South, // Default case, should not occur
+        }
+    }
+
     async fn run_is_block_place(
         &self,
         block: Block,
         server: &Server,
         use_item_on: SUseItemOn,
         location: BlockPos,
-        face: &BlockFace,
+        face: &BlockDirection,
     ) -> Result<bool, Box<dyn PumpkinError>> {
         let entity = &self.living_entity.entity;
         let world = &entity.world;
+
+        let clicked_block_pos = BlockPos(location.0);
+        let clicked_block_state = world.get_block_state(&clicked_block_pos).await?;
 
         // check block under the world
         if location.0.y + face.to_offset().y < WORLD_LOWEST_Y.into() {
@@ -1188,20 +1206,19 @@ impl Player {
             _ => {}
         }
 
-        let clicked_world_pos = BlockPos(location.0);
-        let clicked_block_state = world.get_block_state(&clicked_world_pos).await?;
+        let clicked_block_updated_able = false;
 
-        let world_pos = if clicked_block_state.replaceable {
-            clicked_world_pos
+        let final_block_pos = if clicked_block_state.replaceable || clicked_block_updated_able {
+            clicked_block_pos
         } else {
-            let world_pos = BlockPos(location.0 + face.to_offset());
-            let previous_block_state = world.get_block_state(&world_pos).await?;
+            let block_pos = BlockPos(location.0 + face.to_offset());
+            let previous_block_state = world.get_block_state(&block_pos).await?;
 
             if !previous_block_state.replaceable {
                 return Ok(true);
             }
 
-            world_pos
+            block_pos
         };
 
         // To this point we must have the new block state
@@ -1210,17 +1227,28 @@ impl Player {
         let mut intersects = false;
         for player in world.get_nearby_players(entity.pos.load(), 20.0).await {
             let bounding_box = player.1.living_entity.entity.bounding_box.load();
-            if bounding_box.intersects_block(&world_pos, &block_bounding_box) {
+            if bounding_box.intersects_block(&final_block_pos, &block_bounding_box) {
                 intersects = true;
             }
         }
         if !intersects {
-            world
-                .set_block_state(&world_pos, block.default_state_id)
+            let mapped_block_id = server
+                .block_properties_manager
+                .get_state_id(
+                    world,
+                    &block,
+                    face,
+                    &final_block_pos,
+                    &use_item_on,
+                    &self.get_player_direction(),
+                )
+                .await;
+            let _replaced_id = world
+                .set_block_state(&final_block_pos, mapped_block_id)
                 .await;
             server
                 .block_manager
-                .on_placed(&block, self, world_pos, server)
+                .on_placed(&block, self, final_block_pos, server)
                 .await;
         }
         self.client
